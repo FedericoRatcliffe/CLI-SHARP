@@ -114,6 +114,14 @@ public class TerminalCanvas : Control
             }
         }
 
+        // Right-click paste (when mouse tracking is off)
+        if (props.IsRightButtonPressed && _grid.MouseTrackingMode == 0)
+        {
+            _ = PasteAsync();
+            e.Handled = true;
+            return;
+        }
+
         if (_grid.MouseTrackingMode > 0 && SendInput is not null)
         {
             int button = props.IsMiddleButtonPressed ? 1 : props.IsRightButtonPressed ? 2 : 0;
