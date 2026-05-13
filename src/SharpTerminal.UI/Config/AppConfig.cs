@@ -12,8 +12,9 @@ public sealed class AppConfig
     public FontConfig Font { get; set; } = new();
     public string Shell { get; set; } = "powershell.exe";
     public int Scrollback { get; set; } = 1000;
-    public ThemeConfig Theme { get; set; } = ThemeConfig.CatppuccinMocha();
+    public ThemeConfig Theme { get; set; } = ThemeConfig.PureBlack();
     public AiConfig Ai { get; set; } = new();
+    public List<ShellEntry> Shells { get; set; } = [];
     public List<WorkflowConfig> Workflows { get; set; } =
     [
         new() { Name = "Docker Run", Command = "docker run -p {port}:80 {image}" },
@@ -38,13 +39,26 @@ public sealed class FontConfig
 
 public sealed class ThemeConfig
 {
-    public string Name { get; set; } = "Catppuccin Mocha";
-    public string Foreground { get; set; } = "#CDD6F4";
-    public string Background { get; set; } = "#1E1E2E";
-    public string Cursor { get; set; } = "#F5E0DC";
+    public string Name { get; set; } = "Pure Black";
+    public string Foreground { get; set; } = "#E0E0E0";
+    public string Background { get; set; } = "#000000";
+    public string Cursor { get; set; } = "#FFFFFF";
     public string[] Palette { get; set; } = [];
 
     // ── Built-in themes ─────────────────────────────────────────────
+
+    public static ThemeConfig PureBlack() => new()
+    {
+        Name = "Pure Black",
+        Foreground = "#E0E0E0", Background = "#000000", Cursor = "#FFFFFF",
+        Palette =
+        [
+            "#000000", "#FF5555", "#50FA7B", "#F1FA8C",
+            "#82AAFF", "#FF79C6", "#8BE9FD", "#BFBFBF",
+            "#4D4D4D", "#FF6E6E", "#69FF94", "#FFFFA5",
+            "#A0C4FF", "#FF92DF", "#A4FFFF", "#FFFFFF",
+        ]
+    };
 
     public static ThemeConfig CatppuccinMocha() => new()
     {
@@ -124,6 +138,12 @@ public sealed class ThemeConfig
 }
 
 public sealed class WorkflowConfig
+{
+    public string Name { get; set; } = "";
+    public string Command { get; set; } = "";
+}
+
+public sealed class ShellEntry
 {
     public string Name { get; set; } = "";
     public string Command { get; set; } = "";

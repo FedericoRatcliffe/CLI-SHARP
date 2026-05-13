@@ -34,9 +34,14 @@ public class TerminalCanvas : Control
     // Visual bell
     private bool _bellFlash;
 
-    // Render throttle (~60fps max)
-    private DateTime _lastRenderTime;
-    private bool _renderPending;
+    // Render pump: ~60fps tick that invalidates only when the grid changed.
+    // Decouples PTY reads from UI invalidation — heavy output (npm install, ls -R)
+    // no longer floods the dispatcher with per-read Posts.
+    private readonly DispatcherTimer _renderTimer;
+    private long _lastInvalidatedGen = -1;
+
+    /// <summary>Fires on every render tick where the grid actually changed (UI thread).</summary>
+    public event Action? FrameRendered;
 
     // Search
     private List<(int AbsRow, int Col, int Len)>? _searchMatches;
@@ -56,6 +61,34 @@ public class TerminalCanvas : Control
         _blinkTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(530) };
         _blinkTimer.Tick += (_, _) => { _cursorVisible = !_cursorVisible; InvalidateVisual(); };
         _blinkTimer.Start();
+
+        _renderTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+        _renderTimer.Tick += OnRenderTick;
+        _renderTimer.Start();
+    }
+
+    private void OnRenderTick(object? sender, EventArgs e)
+    {
+        if (_grid is null) return;
+        long gen = _grid.RenderGeneration;
+        if (gen == _lastInvalidatedGen) return;
+        _lastInvalidatedGen = gen;
+        InvalidateVisual();
+        FrameRendered?.Invoke();
+    }
+
+    protected override void OnDetachedFromVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+    {
+        _renderTimer.Stop();
+        _blinkTimer.Stop();
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnAttachedToVisualTree(Avalonia.VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        _renderTimer.Start();
+        _blinkTimer.Start();
     }
 
     public void SetGrid(TerminalGrid grid, object? syncRoot = null)
@@ -64,27 +97,11 @@ public class TerminalCanvas : Control
         InvalidateMeasure(); InvalidateVisual();
     }
 
-    /// <summary>Request a render, throttled to ~60fps.</summary>
-    public void RequestRender()
-    {
-        if (_renderPending) return;
-        var elapsed = (DateTime.UtcNow - _lastRenderTime).TotalMilliseconds;
-        if (elapsed >= 16)
-        {
-            _lastRenderTime = DateTime.UtcNow;
-            InvalidateVisual();
-        }
-        else
-        {
-            _renderPending = true;
-            DispatcherTimer.RunOnce(() =>
-            {
-                _renderPending = false;
-                _lastRenderTime = DateTime.UtcNow;
-                InvalidateVisual();
-            }, TimeSpan.FromMilliseconds(16 - elapsed));
-        }
-    }
+    /// <summary>
+    /// No-op. The internal render pump invalidates automatically when the grid
+    /// changes. Kept for API stability; callers don't need to invoke this.
+    /// </summary>
+    public void RequestRender() { }
 
     /// <summary>Change font size (for Ctrl+/Ctrl- zoom).</summary>
     public void AdjustFontSize(double delta)

@@ -71,7 +71,7 @@ public partial class MainWindow : Window
 
     // ── Pane factory ────────────────────────────────────────────────
 
-    private TerminalPane CreatePane(int cols, int rows)
+    private TerminalPane CreatePane(int cols, int rows, ShellEntry? explicitShell = null)
     {
         var config = _configManager.Config;
         var font = new TerminalFontMetrics(config.Font.Family, config.Font.Size);
@@ -79,7 +79,9 @@ public partial class MainWindow : Window
         canvas.Renderer.ApplyTheme(config.Theme);
         canvas.Renderer.UpdateFont(font);
 
-        var shell = DetectShell(config.Shell);
+        var shell = explicitShell is not null
+            ? explicitShell.Command
+            : DetectShell(config.Shell);
         var pty = ConPtyConnection.Start(shell, cols, rows);
         var session = new TerminalSession(pty, cols, rows);
         var pane = new TerminalPane { Session = session, Canvas = canvas };
@@ -93,8 +95,9 @@ public partial class MainWindow : Window
             await session.SendInputAsync(data);
         };
 
-        session.OutputReceived += () =>
-            Dispatcher.UIThread.Post(() => { canvas.RequestRender(); UpdateStatusBar(); });
+        // Status bar updates piggyback on the canvas's render tick — only fires
+        // when the grid actually changed, and is already on the UI thread.
+        canvas.FrameRendered += UpdateStatusBar;
         session.TitleChanged += title =>
             Dispatcher.UIThread.Post(() => { pane.Title = title; UpdateTabBar(); });
         session.ProcessExited += () =>
@@ -124,12 +127,15 @@ public partial class MainWindow : Window
 
     // ── Tabs ────────────────────────────────────────────────────────
 
-    private void CreateNewTab()
+    private void CreateNewTab() => CreateNewTab(null);
+
+    private void CreateNewTab(ShellEntry? shell)
     {
         try
         {
             var (cols, rows) = GetPaneSize();
-            var pane = CreatePane(cols, rows);
+            var pane = CreatePane(cols, rows, shell);
+            if (shell is not null) pane.Title = shell.Name;
             _tabs.Add(new TabInfo { Root = pane, ActivePane = pane });
             SwitchToTab(_tabs.Count - 1);
         }
@@ -157,6 +163,38 @@ public partial class MainWindow : Window
 
     private void NextTab() => SwitchToTab((_activeTab + 1) % _tabs.Count);
     private void PrevTab() => SwitchToTab((_activeTab - 1 + _tabs.Count) % _tabs.Count);
+
+    // ── Shell switcher ──────────────────────────────────────────────
+
+    private void ShowShellMenu(Control anchor)
+    {
+        var shells = ShellDetector.Resolve(_configManager.Config);
+        if (shells.Count == 0) return;
+
+        var flyout = new MenuFlyout { Placement = PlacementMode.BottomEdgeAlignedLeft };
+        foreach (var s in shells)
+        {
+            var entry = s;
+            var item = new MenuItem { Header = entry.Name };
+            item.Click += (_, _) => CreateNewTab(entry);
+            flyout.Items.Add(item);
+        }
+        flyout.ShowAt(anchor);
+    }
+
+    private void ShowShellPicker()
+    {
+        var shells = ShellDetector.Resolve(_configManager.Config);
+        if (shells.Count == 0) return;
+
+        var items = new List<PaletteOverlay.Item>();
+        foreach (var s in shells)
+        {
+            var entry = s;
+            items.Add(new PaletteOverlay.Item(entry.Name, entry.Command, () => CreateNewTab(entry)));
+        }
+        ShowOverlay(new PaletteOverlay(items, "Pick a shell..."));
+    }
 
     // ── Splits ──────────────────────────────────────────────────────
 
@@ -364,6 +402,16 @@ public partial class MainWindow : Window
         addBtn.PointerPressed += (_, _) => CreateNewTab();
         TabStrip.Children.Add(addBtn);
 
+        var chevron = new TextBlock
+        {
+            Text = "▾", // ▾
+            Foreground = new SolidColorBrush(inactiveFg),
+            FontSize = 11, Padding = new Thickness(4, 5, 6, 5), Margin = new Thickness(0, 2, 0, 0),
+            Cursor = new Cursor(StandardCursorType.Hand),
+        };
+        chevron.PointerPressed += (s, _) => ShowShellMenu((Control)s!);
+        TabStrip.Children.Add(chevron);
+
         Title = _activeTab >= 0 && _activeTab < _tabs.Count
             ? $"SharpTerminal — {_tabs[_activeTab].ActivePane?.Title ?? "Terminal"}"
             : "SharpTerminal";
@@ -487,6 +535,7 @@ public partial class MainWindow : Window
         var items = new List<PaletteOverlay.Item>
         {
             new("New Tab", "Ctrl+Shift+T", CreateNewTab),
+            new("New Tab with Shell...", "Ctrl+Shift+`", ShowShellPicker),
             new("Close Pane", "Ctrl+Shift+W", CloseActivePane),
             new("Split Horizontal", "Ctrl+Shift+D", () => SplitActive(SplitDirection.Horizontal)),
             new("Split Vertical", "Ctrl+Shift+E", () => SplitActive(SplitDirection.Vertical)),
@@ -500,6 +549,7 @@ public partial class MainWindow : Window
             }),
             new("Focus Next Pane", "Alt+→", FocusNextPane),
             new("Focus Previous Pane", "Alt+←", FocusPrevPane),
+            new("Theme: Pure Black", null, () => ApplyThemeByName(ThemeConfig.PureBlack())),
             new("Theme: Catppuccin Mocha", null, () => ApplyThemeByName(ThemeConfig.CatppuccinMocha())),
             new("Theme: One Dark", null, () => ApplyThemeByName(ThemeConfig.OneDark())),
             new("Theme: Dracula", null, () => ApplyThemeByName(ThemeConfig.Dracula())),
@@ -647,6 +697,7 @@ public partial class MainWindow : Window
             case Key.A: ShowAiGenerate(); e.Handled = true; return;
             case Key.P: ShowCommandPalette(); e.Handled = true; return;
             case Key.F: ShowSearchOverlay(); e.Handled = true; return;
+            case Key.Oem3: ShowShellPicker(); e.Handled = true; return;
             case Key.C: // Copy selection
                 if (_activeTab >= 0 && _tabs[_activeTab].ActivePane?.Canvas.HasSelection == true)
                 { _ = _tabs[_activeTab].ActivePane!.Canvas.CopySelectionAsync(); e.Handled = true; return; }

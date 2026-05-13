@@ -22,15 +22,23 @@ public sealed class TerminalRenderer
     private Color _defaultFg, _defaultBg, _cursorColor;
     private Color _hyperlinkColor = Color.Parse("#89B4FA");
     private Color[] _palette16 = new Color[16];
-    private ImmutableSolidColorBrush _defaultFgBrush = null!;
     private ImmutableSolidColorBrush _defaultBgBrush = null!;
-    private ImmutableSolidColorBrush[] _palette16Brushes = [];
 
     private static readonly Color SelectionColor = Color.FromArgb(80, 137, 180, 250);
     private static readonly Color SearchColor = Color.FromArgb(100, 249, 226, 175);
     private static readonly Color ActiveSearchColor = Color.FromArgb(160, 249, 226, 175);
 
-    private readonly Dictionary<(char, bool, uint), FormattedText> _glyphCache = new();
+    // Brush cache keyed by ARGB. Replaces the previous linear scan over the 16-color
+    // palette — at 120x40 that scan cost ~77k comparisons per frame.
+    private readonly Dictionary<uint, ImmutableSolidColorBrush> _brushCache = new();
+
+    // Glyph cache: two-generation rotating cache so we never hit a full Clear() hitch.
+    // When _glyphCache hits capacity, demote it to _glyphCacheOld (still readable for
+    // promotion) and start a fresh one. Hot glyphs get promoted on next access.
+    private Dictionary<(char, bool, uint), FormattedText> _glyphCache = new();
+    private Dictionary<(char, bool, uint), FormattedText> _glyphCacheOld = new();
+    private const int GlyphCacheCapacity = 16_000;
+
     private readonly Dictionary<Grid.InlineImageData, Bitmap> _imageCache = new();
     private readonly StringBuilder _runBuffer = new(256); // Reused per render
 
@@ -56,13 +64,18 @@ public sealed class TerminalRenderer
         _cursorColor = Color.Parse(theme.Cursor);
         if (theme.Palette.Length >= 16)
             _palette16 = theme.Palette.Select(s => Color.Parse(s)).ToArray();
-        _defaultFgBrush = new ImmutableSolidColorBrush(_defaultFg);
-        _defaultBgBrush = new ImmutableSolidColorBrush(_defaultBg);
-        _palette16Brushes = _palette16.Select(c => new ImmutableSolidColorBrush(c)).ToArray();
+        _brushCache.Clear();
+        _defaultBgBrush = GetBrush(_defaultBg);
         _glyphCache.Clear();
+        _glyphCacheOld.Clear();
     }
 
-    public void UpdateFont(FontMetrics font) { _font = font; _glyphCache.Clear(); }
+    public void UpdateFont(FontMetrics font)
+    {
+        _font = font;
+        _glyphCache.Clear();
+        _glyphCacheOld.Clear();
+    }
 
     public void Render(DrawingContext ctx, Grid grid)
     {
@@ -233,12 +246,25 @@ public sealed class TerminalRenderer
     {
         uint argb = ((uint)fg.A << 24) | ((uint)fg.R << 16) | ((uint)fg.G << 8) | fg.B;
         var key = (c, bold, argb);
-        if (!_glyphCache.TryGetValue(key, out var ft))
+
+        if (_glyphCache.TryGetValue(key, out var ft)) return ft;
+
+        // Found in old gen: promote to current so it survives the next rotation.
+        if (_glyphCacheOld.TryGetValue(key, out ft))
         {
-            ft = new FormattedText(c.ToString(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                bold ? _font.BoldTypeface : _font.Typeface, _font.FontSize, GetBrush(fg));
             _glyphCache[key] = ft;
-            if (_glyphCache.Count > 8_000) _glyphCache.Clear();
+            return ft;
+        }
+
+        ft = new FormattedText(c.ToString(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            bold ? _font.BoldTypeface : _font.Typeface, _font.FontSize, GetBrush(fg));
+        _glyphCache[key] = ft;
+
+        // Rotate generations instead of a full Clear() — avoids the per-clear hitch.
+        if (_glyphCache.Count >= GlyphCacheCapacity)
+        {
+            _glyphCacheOld = _glyphCache;
+            _glyphCache = new Dictionary<(char, bool, uint), FormattedText>(GlyphCacheCapacity);
         }
         return ft;
     }
@@ -280,10 +306,10 @@ public sealed class TerminalRenderer
 
     private ImmutableSolidColorBrush GetBrush(Color color)
     {
-        if (color == _defaultFg) return _defaultFgBrush;
-        if (color == _defaultBg) return _defaultBgBrush;
-        for (int i = 0; i < _palette16.Length; i++)
-            if (_palette16[i] == color) return _palette16Brushes[i];
-        return new ImmutableSolidColorBrush(color);
+        uint argb = ((uint)color.A << 24) | ((uint)color.R << 16) | ((uint)color.G << 8) | color.B;
+        if (_brushCache.TryGetValue(argb, out var b)) return b;
+        b = new ImmutableSolidColorBrush(color);
+        _brushCache[argb] = b;
+        return b;
     }
 }
