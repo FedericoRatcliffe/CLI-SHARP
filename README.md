@@ -75,19 +75,19 @@ Designed as a daily-driver terminal for developers, with features like command b
 ```bash
 git clone https://github.com/YOUR_USERNAME/cli-sharp.git
 cd cli-sharp/Back
-dotnet run --project src/CliSharp.UI
+dotnet run --project src/SharpTerminal.UI
 ```
 
 ### Build release
 
 ```bash
-dotnet build CliSharp.sln --configuration Release
+dotnet build SharpTerminal.sln --configuration Release
 ```
 
 ### Run tests
 
 ```bash
-dotnet test CliSharp.sln
+dotnet test SharpTerminal.sln
 ```
 
 There are **102 unit tests** covering the ANSI parser, grid operations, and GridManager integration.
@@ -95,10 +95,10 @@ There are **102 unit tests** covering the ANSI parser, grid operations, and Grid
 ### Publish as single-file executable
 
 ```bash
-dotnet publish src/CliSharp.UI/CliSharp.UI.csproj --configuration Release --runtime win-x64 --output ./publish
+dotnet publish src/SharpTerminal.UI/SharpTerminal.UI.csproj --configuration Release --runtime win-x64 --output ./publish
 ```
 
-This produces a **self-contained** `CliSharp.UI.exe` (~88 MB) that runs on any Windows 10+ machine **without requiring .NET SDK installed**. Just copy and run.
+This produces a **self-contained** `SharpTerminal.UI.exe` (~88 MB) that runs on any Windows 10+ machine **without requiring .NET SDK installed**. Just copy and run.
 
 ---
 
@@ -286,29 +286,29 @@ Clean Architecture with 4 layers:
 
 ```
 Back/
-├── CliSharp.sln
+├── SharpTerminal.sln
 ├── nuget.config
 ├── .gitignore
 ├── README.md
 ├── LICENSE
 │
 ├── src/
-│   ├── CliSharp.Domain/
+│   ├── SharpTerminal.Domain/
 │   │   ├── Entities/          Cell.cs
 │   │   ├── Enums/             AnsiColor.cs
 │   │   └── ValueObjects/      TerminalColor.cs, CellAttributes.cs
 │   │
-│   ├── CliSharp.Application/
+│   ├── SharpTerminal.Application/
 │   │   ├── Abstractions/      IPtyConnection.cs
 │   │   ├── Parser/            AnsiParser.cs, TransitionTable.cs, IParserHandler.cs,
 │   │   │                      ParserState.cs, ParserAction.cs
 │   │   └── Terminal/          Grid.cs, GridManager.cs, TerminalSession.cs,
 │   │                          CommandHistory.cs, LinkDetector.cs, UnicodeWidth.cs
 │   │
-│   ├── CliSharp.Infrastructure/
+│   ├── SharpTerminal.Infrastructure/
 │   │   └── ConPty/            NativeMethods.cs, PseudoConsole.cs, ConPtyConnection.cs
 │   │
-│   └── CliSharp.UI/
+│   └── SharpTerminal.UI/
 │       ├── AI/                AiService.cs
 │       ├── Config/            AppConfig.cs, ConfigManager.cs
 │       ├── Controls/          TerminalCanvas.cs, PaletteOverlay.cs, AiOverlay.cs
@@ -316,11 +316,11 @@ Back/
 │       ├── Rendering/         TerminalRenderer.cs, FontMetrics.cs
 │       ├── Views/             MainWindow.axaml, MainWindow.axaml.cs
 │       ├── App.axaml, App.axaml.cs, Program.cs
-│       └── CliSharp.UI.csproj
+│       └── SharpTerminal.UI.csproj
 │
 └── tests/
-    ├── CliSharp.Tests.Unit/       102 tests (parser, grid, grid manager)
-    └── CliSharp.Tests.Integration/
+    ├── SharpTerminal.Tests.Unit/       102 tests (parser, grid, grid manager)
+    └── SharpTerminal.Tests.Integration/
 ```
 
 ---
@@ -433,19 +433,19 @@ git clone https://github.com/YOUR_USERNAME/cli-sharp.git
 cd cli-sharp/Back
 
 # Build
-dotnet build CliSharp.sln
+dotnet build SharpTerminal.sln
 
 # Test
-dotnet test CliSharp.sln
+dotnet test SharpTerminal.sln
 
 # Run
-dotnet run --project src/CliSharp.UI
+dotnet run --project src/SharpTerminal.UI
 
 # Run in Release mode
-dotnet run --project src/CliSharp.UI --configuration Release
+dotnet run --project src/SharpTerminal.UI --configuration Release
 
 # Publish standalone executable
-dotnet publish src/CliSharp.UI/CliSharp.UI.csproj -c Release -r win-x64 -o ./publish
+dotnet publish src/SharpTerminal.UI/SharpTerminal.UI.csproj -c Release -r win-x64 -o ./publish
 ```
 
 ---
