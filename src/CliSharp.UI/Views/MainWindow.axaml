@@ -1,0 +1,21 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CliSharp.UI.Views.MainWindow"
+        Title="CliSharp"
+        Width="1024" Height="600"
+        Background="#1E1E2E">
+
+    <!-- Panel raíz: terminal abajo, overlay arriba (z-order) -->
+    <Panel>
+        <DockPanel>
+            <Border DockPanel.Dock="Top" Background="#11111B" Padding="4,0" MinHeight="32">
+                <StackPanel x:Name="TabStrip" Orientation="Horizontal" VerticalAlignment="Center" />
+            </Border>
+            <Panel x:Name="TerminalHost" Background="#1E1E2E" />
+        </DockPanel>
+
+        <!-- Overlay host (command palette / history search) -->
+        <Panel x:Name="OverlayHost" IsVisible="False" />
+    </Panel>
+
+</Window>
