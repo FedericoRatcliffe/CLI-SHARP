@@ -36,9 +36,10 @@ public sealed class Grid
     public int CursorColumn { get; private set; }
     public CellAttributes CurrentAttributes { get; set; } = CellAttributes.Default;
     public bool CursorVisible { get; set; } = true;
+    public int CursorShape { get; set; } // 0-1=blink block, 2=steady block, 3-4=underline, 5-6=bar
     public int ScrollbackCount => _scrollback.Count;
 
-    // Modos DECSET
+    // DECSET modes
     public bool IsAltScreen { get; private set; }
     public bool ApplicationCursorKeys { get; set; }
     public bool BracketedPasteMode { get; set; }

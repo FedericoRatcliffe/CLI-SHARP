@@ -9,6 +9,7 @@ using CliSharp.Application.Terminal;
 using CliSharp.Domain.ValueObjects;
 using CliSharp.UI.Rendering;
 using TerminalGrid = CliSharp.Application.Terminal.Grid;
+using TerminalFontMetrics = CliSharp.UI.Rendering.FontMetrics;
 
 namespace CliSharp.UI.Controls;
 
@@ -32,6 +33,10 @@ public class TerminalCanvas : Control
 
     // Visual bell
     private bool _bellFlash;
+
+    // Render throttle (~60fps max)
+    private DateTime _lastRenderTime;
+    private bool _renderPending;
 
     // Search
     private List<(int AbsRow, int Col, int Len)>? _searchMatches;
@@ -57,6 +62,37 @@ public class TerminalCanvas : Control
     {
         _grid = grid; _syncRoot = syncRoot;
         InvalidateMeasure(); InvalidateVisual();
+    }
+
+    /// <summary>Request a render, throttled to ~60fps.</summary>
+    public void RequestRender()
+    {
+        if (_renderPending) return;
+        var elapsed = (DateTime.UtcNow - _lastRenderTime).TotalMilliseconds;
+        if (elapsed >= 16)
+        {
+            _lastRenderTime = DateTime.UtcNow;
+            InvalidateVisual();
+        }
+        else
+        {
+            _renderPending = true;
+            DispatcherTimer.RunOnce(() =>
+            {
+                _renderPending = false;
+                _lastRenderTime = DateTime.UtcNow;
+                InvalidateVisual();
+            }, TimeSpan.FromMilliseconds(16 - elapsed));
+        }
+    }
+
+    /// <summary>Change font size (for Ctrl+/Ctrl- zoom).</summary>
+    public void AdjustFontSize(double delta)
+    {
+        double newSize = Math.Clamp(_renderer.Font.FontSize + delta, 8, 36);
+        _renderer.UpdateFont(new TerminalFontMetrics(_renderer.Font.FontFamily.Name, newSize));
+        InvalidateMeasure();
+        InvalidateVisual();
     }
 
     /// <summary>Triggers a brief visual bell flash.</summary>
@@ -255,8 +291,8 @@ public class TerminalCanvas : Control
             }
         }
 
-        // Right-click paste
-        if (props.IsRightButtonPressed && _grid.MouseTrackingMode == 0)
+        // Right-click or middle-click paste
+        if ((props.IsRightButtonPressed || props.IsMiddleButtonPressed) && _grid.MouseTrackingMode == 0)
         { _ = PasteAsync(); e.Handled = true; return; }
 
         // Left-click: start selection (when not mouse tracking)
@@ -323,7 +359,7 @@ public class TerminalCanvas : Control
         if (_grid.MouseTrackingMode > 0 && SendInput is not null)
         { SendMouseSequence(e.GetPosition(this), e.Delta.Y > 0 ? 64 : 65, 'M'); }
         else if (_syncRoot is not null)
-        { lock (_syncRoot) _grid.ScrollViewport(e.Delta.Y > 0 ? 3 : -3); InvalidateVisual(); }
+        { lock (_syncRoot) _grid.ScrollViewport(e.Delta.Y > 0 ? 1 : -1); InvalidateVisual(); }
         e.Handled = true;
     }
 

@@ -11,8 +11,9 @@ using CliSharp.UI.Config;
 namespace CliSharp.UI.Rendering;
 
 /// <summary>
-/// Optimized renderer: glyph cache, text batching, selection highlight,
-/// search highlight, cursor blink, inline images.
+/// Optimized renderer: StringBuilder reuse, background rect batching, glyph cache,
+/// text run batching, cursor shapes (block/bar/underline), underline/strikethrough,
+/// selection, search highlights, inline images, command blocks, visual bell.
 /// </summary>
 public sealed class TerminalRenderer
 {
@@ -25,13 +26,13 @@ public sealed class TerminalRenderer
     private ImmutableSolidColorBrush _defaultBgBrush = null!;
     private ImmutableSolidColorBrush[] _palette16Brushes = [];
 
-    private static readonly Color SelectionColor = Color.FromArgb(80, 137, 180, 250); // blue, 30% opacity
-    private static readonly Color SearchColor = Color.FromArgb(100, 249, 226, 175);    // yellow
+    private static readonly Color SelectionColor = Color.FromArgb(80, 137, 180, 250);
+    private static readonly Color SearchColor = Color.FromArgb(100, 249, 226, 175);
     private static readonly Color ActiveSearchColor = Color.FromArgb(160, 249, 226, 175);
 
     private readonly Dictionary<(char, bool, uint), FormattedText> _glyphCache = new();
     private readonly Dictionary<Grid.InlineImageData, Bitmap> _imageCache = new();
-    private long _lastRenderedGeneration;
+    private readonly StringBuilder _runBuffer = new(256); // Reused per render
 
     // State set by TerminalCanvas before each Render()
     public bool CursorBlinkVisible { get; set; } = true;
@@ -67,25 +68,36 @@ public sealed class TerminalRenderer
     {
         double cw = _font.CellWidth;
         double ch = _font.CellHeight;
+        int gridCols = grid.Columns;
 
-        // 1. Background
-        ctx.DrawRectangle(_defaultBgBrush, null, new Rect(0, 0, grid.Columns * cw, grid.Rows * ch));
+        // 1. Background fill
+        ctx.DrawRectangle(_defaultBgBrush, null, new Rect(0, 0, gridCols * cw, grid.Rows * ch));
 
-        // 2. Cell backgrounds + text runs
+        // 2. Cell backgrounds (batched: consecutive same-color → 1 rect) + text runs
         for (int row = 0; row < grid.Rows; row++)
         {
             var cells = grid.GetVisibleRow(row);
             double y = row * ch;
-            int cols = Math.Min(cells.Length, grid.Columns);
+            int cols = Math.Min(cells.Length, gridCols);
 
-            for (int col = 0; col < cols; col++)
+            // -- Batched backgrounds --
+            int bgStart = -1;
+            Color bgColor = default;
+            for (int col = 0; col <= cols; col++)
             {
-                var (_, bg) = ResolveColors(cells[col].Attributes);
-                if (bg != _defaultBg)
-                    ctx.DrawRectangle(GetBrush(bg), null, new Rect(col * cw, y, cw, ch));
+                Color cellBg = col < cols ? ResolveColors(cells[col].Attributes).bg : _defaultBg;
+                if (cellBg == bgColor && col < cols) continue;
+
+                // Flush previous bg run
+                if (bgStart >= 0 && bgColor != _defaultBg)
+                    ctx.DrawRectangle(GetBrush(bgColor), null,
+                        new Rect(bgStart * cw, y, (col - bgStart) * cw, ch));
+
+                bgStart = col;
+                bgColor = cellBg;
             }
 
-            // Text batching by runs
+            // -- Text runs (batched by same fg+bold) --
             int c = 0;
             while (c < cols)
             {
@@ -96,7 +108,8 @@ public sealed class TerminalRenderer
                 bool bold = cell.Attributes.Flags.HasFlag(CellFlags.Bold);
                 var effectiveFg = cell.Attributes.HyperlinkId > 0 ? _hyperlinkColor : fg;
                 int runStart = c;
-                var sb = new StringBuilder();
+                CellFlags runFlags = cell.Attributes.Flags;
+                _runBuffer.Clear();
 
                 while (c < cols)
                 {
@@ -107,31 +120,38 @@ public sealed class TerminalRenderer
                     bool rBold = rc.Attributes.Flags.HasFlag(CellFlags.Bold);
                     var rEffFg = rc.Attributes.HyperlinkId > 0 ? _hyperlinkColor : rfg;
                     if (rEffFg != effectiveFg || rBold != bold) break;
-                    sb.Append(rc.Character);
+                    _runBuffer.Append(rc.Character);
                     c++;
                 }
 
-                if (sb.Length > 0)
+                if (_runBuffer.Length > 0)
                 {
-                    if (sb.Length == 1)
+                    if (_runBuffer.Length == 1)
                     {
-                        var ft = GetCachedGlyph(sb[0], bold, effectiveFg);
-                        ctx.DrawText(ft, new Point(runStart * cw, y));
+                        ctx.DrawText(GetCachedGlyph(_runBuffer[0], bold, effectiveFg), new Point(runStart * cw, y));
                     }
                     else
                     {
                         var typeface = bold ? _font.BoldTypeface : _font.Typeface;
-                        var ft = new FormattedText(sb.ToString(), CultureInfo.InvariantCulture,
+                        var ft = new FormattedText(_runBuffer.ToString(), CultureInfo.InvariantCulture,
                             FlowDirection.LeftToRight, typeface, _font.FontSize, GetBrush(effectiveFg));
                         ctx.DrawText(ft, new Point(runStart * cw, y));
                     }
                 }
 
-                if (cells[runStart].Attributes.HyperlinkId > 0)
+                // Underline / strikethrough / hyperlink decorations for the run
+                double runEndX = c * cw;
+                double runStartX = runStart * cw;
+
+                if (runFlags.HasFlag(CellFlags.Underline) || cells[runStart].Attributes.HyperlinkId > 0)
                 {
-                    double uy = y + ch - 2;
-                    ctx.DrawLine(new Pen(GetBrush(_hyperlinkColor), 1),
-                        new Point(runStart * cw, uy), new Point(c * cw, uy));
+                    var pen = new Pen(GetBrush(cells[runStart].Attributes.HyperlinkId > 0 ? _hyperlinkColor : effectiveFg), 1);
+                    ctx.DrawLine(pen, new Point(runStartX, y + ch - 2), new Point(runEndX, y + ch - 2));
+                }
+                if (runFlags.HasFlag(CellFlags.Strikethrough))
+                {
+                    var pen = new Pen(GetBrush(effectiveFg), 1);
+                    ctx.DrawLine(pen, new Point(runStartX, y + ch * 0.5), new Point(runEndX, y + ch * 0.5));
                 }
             }
         }
@@ -143,21 +163,16 @@ public sealed class TerminalRenderer
             for (int row = sr; row <= er && row < grid.Rows; row++)
             {
                 int s = row == sr ? sc : 0;
-                int e = row == er ? ec : grid.Columns - 1;
-                ctx.DrawRectangle(selBrush, null,
-                    new Rect(s * cw, row * ch, (e - s + 1) * cw, ch));
+                int e = row == er ? ec : gridCols - 1;
+                ctx.DrawRectangle(selBrush, null, new Rect(s * cw, row * ch, (e - s + 1) * cw, ch));
             }
         }
 
         // 4. Search highlights
         if (SearchHighlights is not null)
-        {
             foreach (var (vr, col, len, active) in SearchHighlights)
-            {
-                var brush = new ImmutableSolidColorBrush(active ? ActiveSearchColor : SearchColor);
-                ctx.DrawRectangle(brush, null, new Rect(col * cw, vr * ch, len * cw, ch));
-            }
-        }
+                ctx.DrawRectangle(new ImmutableSolidColorBrush(active ? ActiveSearchColor : SearchColor),
+                    null, new Rect(col * cw, vr * ch, len * cw, ch));
 
         // 5. Inline images
         foreach (var img in grid.InlineImages)
@@ -174,33 +189,42 @@ public sealed class TerminalRenderer
             byte flag = grid.GetVisibleRowFlag(row);
             if (flag == 0) continue;
             double sy = row * ch;
-            ctx.DrawLine(new Pen(sepBrush, 1), new Point(8, sy - 0.5), new Point(grid.Columns * cw - 8, sy - 0.5));
+            ctx.DrawLine(new Pen(sepBrush, 1), new Point(8, sy - 0.5), new Point(gridCols * cw - 8, sy - 0.5));
             if (flag >= 2)
             {
                 string badge = flag == 2 ? " \u2713 " : " \u2717 ";
                 var badgeBrush = GetBrush(flag == 2 ? Color.Parse("#A6E3A1") : Color.Parse("#F38BA8"));
                 var ft = new FormattedText(badge, CultureInfo.InvariantCulture,
                     FlowDirection.LeftToRight, _font.Typeface, _font.FontSize * 0.75, badgeBrush);
-                ctx.DrawText(ft, new Point(grid.Columns * cw - ft.Width - 8, sy - ch * 0.85));
+                ctx.DrawText(ft, new Point(gridCols * cw - ft.Width - 8, sy - ch * 0.85));
             }
         }
 
-        // 7. Cursor (with blink)
+        // 7. Cursor (block / bar / underline, with blink)
         if (grid.CursorVisible && grid.ViewportOffset == 0 && CursorBlinkVisible)
         {
-            int curCol = Math.Min(grid.CursorColumn, grid.Columns - 1);
-            ctx.DrawRectangle(new ImmutableSolidColorBrush(_cursorColor, 0.7), null,
-                new Rect(curCol * cw, grid.CursorRow * ch, cw, ch));
+            int curCol = Math.Min(grid.CursorColumn, gridCols - 1);
+            double cx = curCol * cw, cy = grid.CursorRow * ch;
+            var curBrush = new ImmutableSolidColorBrush(_cursorColor, 0.8);
+
+            switch (grid.CursorShape)
+            {
+                case 0: case 1: case 2: // Block
+                    ctx.DrawRectangle(curBrush, null, new Rect(cx, cy, cw, ch));
+                    break;
+                case 3: case 4: // Underline
+                    ctx.DrawRectangle(curBrush, null, new Rect(cx, cy + ch - 3, cw, 3));
+                    break;
+                case 5: case 6: // Bar (I-beam)
+                    ctx.DrawRectangle(curBrush, null, new Rect(cx, cy, 2, ch));
+                    break;
+            }
         }
 
         // 8. Visual bell flash
         if (BellFlash)
-        {
-            ctx.DrawRectangle(new ImmutableSolidColorBrush(Color.FromArgb(30, 255, 255, 255)), null,
-                new Rect(0, 0, grid.Columns * cw, grid.Rows * ch));
-        }
-
-        _lastRenderedGeneration = grid.RenderGeneration;
+            ctx.DrawRectangle(new ImmutableSolidColorBrush(Color.FromArgb(30, 255, 255, 255)),
+                null, new Rect(0, 0, gridCols * cw, grid.Rows * ch));
     }
 
     // ── Glyph cache ─────────────────────────────────────────────────

@@ -94,7 +94,7 @@ public partial class MainWindow : Window
         };
 
         session.OutputReceived += () =>
-            Dispatcher.UIThread.Post(() => canvas.InvalidateVisual());
+            Dispatcher.UIThread.Post(() => { canvas.RequestRender(); UpdateStatusBar(); });
         session.TitleChanged += title =>
             Dispatcher.UIThread.Post(() => { pane.Title = title; UpdateTabBar(); });
         session.ProcessExited += () =>
@@ -323,15 +323,37 @@ public partial class MainWindow : Window
         {
             int idx = i;
             bool isActive = i == _activeTab;
-            var tb = new TextBlock
+            var label = new TextBlock
             {
                 Text = $" {_tabs[i].ActivePane?.Title ?? "Terminal"} ",
                 Foreground = new SolidColorBrush(isActive ? activeFg : inactiveFg),
-                Background = new SolidColorBrush(isActive ? activeBg : Colors.Transparent),
-                FontSize = 12, Padding = new Thickness(10, 6), Margin = new Thickness(1, 2, 1, 0),
+                FontSize = 12, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
             };
-            tb.PointerPressed += (_, _) => SwitchToTab(idx);
-            TabStrip.Children.Add(tb);
+            var closeBtn = new TextBlock
+            {
+                Text = "\u00d7", // ×
+                Foreground = new SolidColorBrush(inactiveFg),
+                FontSize = 14, Padding = new Thickness(4, 0, 2, 0),
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+                Cursor = new Cursor(StandardCursorType.Hand),
+            };
+            closeBtn.PointerPressed += (_, e) => { CloseTab(idx); e.Handled = true; };
+
+            var hoverBg = Color.Parse("#313244");
+            var tabPanel = new StackPanel
+            {
+                Orientation = Avalonia.Layout.Orientation.Horizontal,
+                Background = new SolidColorBrush(isActive ? activeBg : Colors.Transparent),
+                Margin = new Thickness(1, 2, 1, 0),
+                Children = { label, closeBtn },
+            };
+            if (!isActive)
+            {
+                tabPanel.PointerEntered += (s, _) => ((StackPanel)s!).Background = new SolidColorBrush(hoverBg);
+                tabPanel.PointerExited += (s, _) => ((StackPanel)s!).Background = new SolidColorBrush(Colors.Transparent);
+            }
+            tabPanel.PointerPressed += (_, _) => SwitchToTab(idx);
+            TabStrip.Children.Add(tabPanel);
         }
         var addBtn = new TextBlock
         {
@@ -635,6 +657,12 @@ public partial class MainWindow : Window
         {
             case Key.Tab: NextTab(); e.Handled = true; return;
             case Key.R: ShowHistorySearch(); e.Handled = true; return;
+            case Key.OemPlus: case Key.Add: // Ctrl+= / Ctrl++  font zoom in
+                ZoomFont(2); e.Handled = true; return;
+            case Key.OemMinus: case Key.Subtract: // Ctrl+-  font zoom out
+                ZoomFont(-2); e.Handled = true; return;
+            case Key.D0: // Ctrl+0  reset font
+                ZoomFont(0); e.Handled = true; return;
         }
 
         if (e.KeyModifiers == cs && e.Key == Key.Tab)
@@ -669,6 +697,47 @@ public partial class MainWindow : Window
         catch { }
 
         return configured;
+    }
+
+    // ── Font zoom (Ctrl+/Ctrl-/Ctrl+0) ─────────────────────────────
+
+    private void ZoomFont(double delta)
+    {
+        if (_activeTab < 0) return;
+        foreach (var pane in _tabs[_activeTab].AllPanes)
+        {
+            if (delta == 0)
+            {
+                var defaultSize = _configManager.Config.Font.Size;
+                pane.Canvas.Renderer.UpdateFont(new TerminalFontMetrics(
+                    _configManager.Config.Font.Family, defaultSize));
+            }
+            else
+            {
+                pane.Canvas.AdjustFontSize(delta);
+            }
+            pane.Canvas.InvalidateMeasure();
+            pane.Canvas.InvalidateVisual();
+        }
+        // Trigger resize to match new cell dimensions
+        Dispatcher.UIThread.Post(ResizeAllPanes);
+        UpdateStatusBar();
+    }
+
+    // ── Status bar ──────────────────────────────────────────────────
+
+    private void UpdateStatusBar()
+    {
+        if (_activeTab < 0 || _activeTab >= _tabs.Count) return;
+        var pane = _tabs[_activeTab].ActivePane;
+        if (pane is null) return;
+
+        var grid = pane.Session.Grid;
+        var font = pane.Canvas.Renderer.Font;
+        var shell = _configManager.Config.Shell;
+
+        StatusLeft.Text = $"{shell}  {grid.Columns}\u00d7{grid.Rows}  {font.FontSize:0}pt";
+        StatusRight.Text = grid.CurrentDirectory ?? "";
     }
 
     // ── Tab model ───────────────────────────────────────────────────

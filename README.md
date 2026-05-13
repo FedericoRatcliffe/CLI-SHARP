@@ -2,56 +2,60 @@
 
 A modern, GPU-accelerated terminal emulator built with **C# / .NET 8** and **Avalonia UI**, inspired by [Warp](https://www.warp.dev/), [Alacritty](https://github.com/alacritty/alacritty), and [Windows Terminal](https://github.com/microsoft/terminal).
 
-Designed as a daily-driver terminal for developers, with features like command blocks, AI assistance, split panes, and a fully customizable theme system.
+Designed as a daily-driver terminal for developers, with features like command blocks, AI assistance, split panes, text selection, scrollback search, and a fully customizable theme system.
 
 ---
 
 ## Features
 
-### Terminal Emulator (Layer 0)
+### Terminal Emulator
 - **Full ANSI/VT parser** — Paul Williams state machine (14 states, table-driven)
 - **Color support** — 16 standard, 256 indexed, and 24-bit truecolor (RGB)
 - **Unicode** — Double-width CJK characters, fullwidth forms
 - **ConPTY** — Native Windows pseudo-terminal via P/Invoke (Windows 10 1809+)
 - **Alt screen buffer** — `?1049` for vim, less, htop
 - **Application cursor keys** — `?1` for vim arrow keys
+- **Cursor shapes** — Block, underline, and bar (I-beam) via CSI SP q (DECSCUSR)
 - **Bracketed paste** — `?2004` prevents accidental command execution
 - **Mouse reporting** — `?1000`, `?1002`, `?1003` + SGR mode `?1006`
 - **OSC sequences** — Title (`0/2`), CWD (`7`), hyperlinks (`8`), clipboard (`52`), command blocks (`133`), inline images (`1337`)
-- **Scrollback** — 1000 lines with mouse wheel navigation
+- **Scrollback** — 1000 lines, smooth 1-line scroll steps
+- **Visual bell** — Brief screen flash on BEL character
+- **Shell auto-detection** — Prefers `pwsh.exe` (PowerShell 7+) when available
 
-### Modern UX (Layer 1)
-- **Tabs** — Multiple terminal sessions, tab bar with `+` button
-- **Split panes** — Horizontal and vertical splits (binary tree layout)
+### Modern UX
+- **Tabs** — Multiple sessions, close button per tab, hover highlight
+- **Split panes** — Horizontal and vertical splits (binary tree layout), active pane indicator
+- **Text selection** — Mouse drag to select, blue highlight overlay
+- **Scrollback search** — Live search with match counter, yellow highlights, F3 navigation
 - **Command blocks** — OSC 133 shell integration with visual separators and exit code badges (&#x2713;/&#x2717;)
 - **Command palette** — Fuzzy search over all actions, themes, and workflows
 - **History search** — Fuzzy matching with consecutive/word-start bonuses
 - **Themes** — 5 built-in themes, hot-reloadable via JSON config
-- **Config hot-reload** — Edit `config.json`, changes apply instantly
+- **Status bar** — Shows shell name, grid size (cols x rows), font size, current directory
+- **Font zoom** — Ctrl+/- to resize font live, Ctrl+0 to reset
+- **Underline & strikethrough** — Rendered as decorations on text runs
 
-### Developer Productivity (Layer 2)
+### Developer Productivity
 - **Link detection** — Ctrl+Click opens URLs in the browser and file paths (`src/foo.cs:42:10`) in VS Code
 - **Shell integration** — OSC 7 for CWD tracking, automatic git branch detection in tab titles
 - **Workflows** — Parameterized command snippets defined in config, accessible from the palette
 
-### AI Integration (Layer 3)
-- **Generate command** — Describe what you want in natural language, AI returns the shell command
+### AI Integration
+- **Generate command** — Describe what you want in natural language, AI returns the shell command with an Execute button
 - **Explain command** — AI explains the last command in plain language
-- **Debug errors** — AI analyzes failed commands with exit code and stderr context
+- **Debug errors** — AI analyzes failed commands with exit code and output context
 - **Summarize output** — AI summarizes the last N lines of terminal output
 - Powered by **Claude API** (Anthropic) — requires API key in config
 
-### Performance (Layer 4)
+### Performance
 - **Glyph cache** — `FormattedText` objects cached by `(char, bold, color)` tuple
-- **Text batching** — Consecutive characters with the same style are drawn in a single call, enabling **font ligatures** (Fira Code, JetBrains Mono, Cascadia Code)
+- **StringBuilder reuse** — Single instance reused across all text runs per frame
+- **Background rect batching** — Consecutive same-color cells merged into single draw calls
+- **Render throttle** — Capped at ~60fps to prevent UI thread saturation during heavy output
+- **Text run batching** — Consecutive same-style characters drawn in one call, enabling **font ligatures** (Fira Code, JetBrains Mono, Cascadia Code)
 - **Inline images** — iTerm2 protocol (OSC 1337) with bitmap caching
 - **GPU-accelerated** — Avalonia renders via Skia (Direct3D on Windows)
-
----
-
-## Screenshots
-
-> _Coming soon — run the app and try `Ctrl+Shift+P` to see the command palette, or `Ctrl+Shift+D` to split panes._
 
 ---
 
@@ -111,6 +115,20 @@ This produces a **self-contained** `CliSharp.UI.exe` (~88 MB) that runs on any W
 | `Ctrl+Shift+D` | Split horizontally (side by side) |
 | `Ctrl+Shift+E` | Split vertically (top/bottom) |
 | `Alt+Arrow` | Move focus between panes |
+| Tab close button (`x`) | Close specific tab |
+
+### Search & Selection
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Shift+F` | Open scrollback search |
+| `Enter` / `F3` | Next search match |
+| `Shift+F3` | Previous search match |
+| `Escape` | Close search |
+| `Ctrl+C` (with selection) | Copy selected text to clipboard |
+| `Ctrl+Shift+C` | Copy selected text to clipboard |
+| Mouse drag | Select text |
+| Click | Clear selection |
 
 ### Tools
 
@@ -120,15 +138,25 @@ This produces a **self-contained** `CliSharp.UI.exe` (~88 MB) that runs on any W
 | `Ctrl+R` | Fuzzy history search |
 | `Ctrl+Shift+A` | AI: Generate command |
 | `Ctrl+V` | Paste (with bracketed paste mode support) |
+| Right-click | Paste from clipboard |
+| Middle-click | Paste from clipboard |
 | `Ctrl+Click` | Open URL in browser / file path in VS Code |
+
+### Font
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+=` / `Ctrl++` | Increase font size (+2pt) |
+| `Ctrl+-` | Decrease font size (-2pt) |
+| `Ctrl+0` | Reset font to config default |
 
 ### Terminal
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+A..Z` | Send control character (Ctrl+C = interrupt, etc.) |
+| `Ctrl+A..Z` | Send control character (Ctrl+C = interrupt when no selection) |
 | Arrow keys | Cursor movement (application mode aware) |
-| `Mouse wheel` | Scroll through scrollback (or mouse reporting if enabled) |
+| Mouse wheel | Scroll through scrollback (1 line per step) |
 
 ---
 
@@ -179,9 +207,10 @@ A default config is created on first run. All changes are applied instantly via 
 
 ### Shell options
 
-Change `"shell"` to use a different shell:
+Change `"shell"` to use a different shell. When set to `powershell.exe`, CLI-SHARP automatically detects and prefers `pwsh.exe` (PowerShell 7+) if installed.
 
 ```json
+"shell": "powershell.exe"
 "shell": "pwsh.exe"
 "shell": "cmd.exe"
 "shell": "wsl.exe"
@@ -244,11 +273,12 @@ Clean Architecture with 4 layers:
 ### Key design decisions
 
 - **ANSI Parser**: Table-driven state machine (Paul Williams model), 14 states x 128 bytes transition table, processes `ReadOnlySpan<char>` after UTF-8 decoding
-- **Grid**: Jagged `Cell[][]` array for O(1) scroll (reference swap), parallel `byte[]` for command block markers
-- **Rendering**: Avalonia `DrawingContext` with glyph cache and text run batching for ligature support
+- **Grid**: Jagged `Cell[][]` array for O(1) scroll (reference swap), parallel `byte[]` for command block markers, `InlineImageData` list for iTerm2 images
+- **Rendering**: Avalonia `DrawingContext` with glyph cache, StringBuilder reuse, background rect batching, and text run batching for ligature support. Render throttled to ~60fps.
 - **Threading**: Background reader takes `lock(SyncRoot)` to update grid; UI thread takes the same lock to render. Coarse-grained but correct.
 - **Splits**: Binary tree (`SplitBranch` / `TerminalPane`) converted to nested `Avalonia.Controls.Grid` layouts
 - **ConPTY**: Direct P/Invoke to `kernel32.dll` — `CreatePseudoConsole`, `CreateProcessW`, pipe I/O
+- **Cursor**: Three shapes (block, underline, bar) via DECSCUSR, with 530ms blink timer that resets on input
 
 ---
 
@@ -260,6 +290,7 @@ Back/
 ├── nuget.config
 ├── .gitignore
 ├── README.md
+├── LICENSE
 │
 ├── src/
 │   ├── CliSharp.Domain/
@@ -305,7 +336,7 @@ Back/
 | xUnit | 2.x | Test framework |
 | FluentAssertions | 6.x | Test assertions |
 
-**Zero external dependencies** for the core terminal emulator. ConPTY, ANSI parser, grid, and renderer are all custom implementations using only .NET BCL.
+**Zero external dependencies** for the core terminal emulator. ConPTY, ANSI parser, grid, and renderer are all custom implementations using only .NET BCL. AI features use `HttpClient` directly (no SDK NuGet).
 
 ---
 
@@ -327,6 +358,7 @@ Back/
 | `CSI n K` | EL | Erase in line |
 | `CSI n d` | VPA | Vertical position absolute |
 | `CSI ... m` | SGR | Select graphic rendition (colors, bold, etc.) |
+| `CSI n SP q` | DECSCUSR | Set cursor shape (0-2 block, 3-4 underline, 5-6 bar) |
 
 ### SGR parameters (CSI ... m)
 
@@ -337,6 +369,8 @@ Back/
 | `3` / `23` | Italic on / off |
 | `4` / `24` | Underline on / off |
 | `7` / `27` | Inverse on / off |
+| `8` / `28` | Hidden on / off |
+| `9` / `29` | Strikethrough on / off |
 | `30-37` | Foreground color (standard) |
 | `38;5;n` | Foreground color (256) |
 | `38;2;r;g;b` | Foreground color (RGB truecolor) |
@@ -367,8 +401,8 @@ Back/
 |-----|-------------|
 | `0` / `2` | Set window title |
 | `7` | Set current working directory |
-| `8` | Hyperlinks (clickable) |
-| `52` | Clipboard access (write only) |
+| `8` | Hyperlinks (clickable with Ctrl+Click) |
+| `52` | Clipboard access (write only, read disabled for security) |
 | `133` | Command blocks (FinalTerm shell integration) |
 | `1337` | Inline images (iTerm2 protocol) |
 
@@ -385,10 +419,10 @@ Back/
 Contributions are welcome! Here are some areas where help is appreciated:
 
 - **Sixel / Kitty graphics protocol** — Alternative image protocols
-- **Mouse text selection** — Select text with mouse drag, copy to clipboard
 - **Autocomplete engine** — Contextual completions (Fig-style specs)
 - **SSH integration** — Detect SSH sessions, sync config
 - **Cross-platform** — macOS/Linux PTY support (Avalonia already supports these platforms)
+- **Tab drag reorder** — Reorder tabs via drag and drop
 - **Performance profiling** — Benchmark with `vttest`, optimize hot paths
 
 ### Development
@@ -409,6 +443,9 @@ dotnet run --project src/CliSharp.UI
 
 # Run in Release mode
 dotnet run --project src/CliSharp.UI --configuration Release
+
+# Publish standalone executable
+dotnet publish src/CliSharp.UI/CliSharp.UI.csproj -c Release -r win-x64 -o ./publish
 ```
 
 ---

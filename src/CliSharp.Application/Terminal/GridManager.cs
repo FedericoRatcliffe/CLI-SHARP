@@ -37,6 +37,13 @@ public sealed class GridManager : IParserHandler
             return;
         }
 
+        // CSI Ps SP q — DECSCUSR (cursor shape)
+        if (intermediates.Length > 0 && intermediates[0] == (byte)' ' && (char)finalByte == 'q')
+        {
+            _grid.CursorShape = Math.Clamp(Param(parameters, 0), 0, 6);
+            return;
+        }
+
         switch ((char)finalByte)
         {
             case 'A': _grid.CursorUp(AtLeast1(Param(parameters, 0))); break;
