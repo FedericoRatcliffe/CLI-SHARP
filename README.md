@@ -88,6 +88,14 @@ dotnet test CliSharp.sln
 
 There are **102 unit tests** covering the ANSI parser, grid operations, and GridManager integration.
 
+### Publish as single-file executable
+
+```bash
+dotnet publish src/CliSharp.UI/CliSharp.UI.csproj --configuration Release --runtime win-x64 --output ./publish
+```
+
+This produces a **self-contained** `CliSharp.UI.exe` (~88 MB) that runs on any Windows 10+ machine **without requiring .NET SDK installed**. Just copy and run.
+
 ---
 
 ## Keyboard Shortcuts

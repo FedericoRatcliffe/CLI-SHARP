@@ -1,11 +1,12 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="CliSharp.UI.Views.MainWindow"
-        Title="CliSharp"
+        Title="CLI-SHARP"
         Width="1024" Height="600"
-        Background="#1E1E2E">
+        Background="#1E1E2E"
+        Icon="avares://CliSharp.UI/icon.png">
 
-    <!-- Panel raíz: terminal abajo, overlay arriba (z-order) -->
+    <!-- Root panel: terminal below, overlay above (z-order) -->
     <Panel>
         <DockPanel>
             <Border DockPanel.Dock="Top" Background="#11111B" Padding="4,0" MinHeight="32">
