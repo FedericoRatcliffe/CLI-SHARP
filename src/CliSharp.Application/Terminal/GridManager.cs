@@ -21,6 +21,7 @@ public sealed class GridManager : IParserHandler
     {
         switch (controlCode)
         {
+            case 0x07: _grid.RingBell(); break;        // BEL
             case 0x08: _grid.Backspace(); break;
             case 0x09: _grid.Tab(); break;
             case 0x0A: case 0x0B: case 0x0C: _grid.LineFeed(); break;

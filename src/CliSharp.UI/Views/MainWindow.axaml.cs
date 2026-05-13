@@ -79,7 +79,8 @@ public partial class MainWindow : Window
         canvas.Renderer.ApplyTheme(config.Theme);
         canvas.Renderer.UpdateFont(font);
 
-        var pty = ConPtyConnection.Start(config.Shell, cols, rows);
+        var shell = DetectShell(config.Shell);
+        var pty = ConPtyConnection.Start(shell, cols, rows);
         var session = new TerminalSession(pty, cols, rows);
         var pane = new TerminalPane { Session = session, Canvas = canvas };
 
@@ -104,6 +105,9 @@ public partial class MainWindow : Window
                 var clip = TopLevel.GetTopLevel(this)?.Clipboard;
                 if (clip is not null) await clip.SetTextAsync(text);
             });
+
+        session.BellRung += () =>
+            Dispatcher.UIThread.Post(() => canvas.FlashBell());
 
         session.StartReading();
         return pane;
@@ -361,7 +365,99 @@ public partial class MainWindow : Window
         _overlayOpen = false;
         OverlayHost.Children.Clear();
         OverlayHost.IsVisible = false;
+        // Clear search highlights when closing
+        if (_activeTab >= 0 && _activeTab < _tabs.Count)
+            _tabs[_activeTab].ActivePane?.Canvas.SetSearch(null);
         _tabs[_activeTab].ActivePane?.Canvas.Focus();
+    }
+
+    // ── Search overlay (Ctrl+Shift+F) ────────────────────────────────
+
+    private void ShowSearchOverlay()
+    {
+        if (_overlayOpen || _activeTab < 0) return;
+        _overlayOpen = true;
+
+        var canvas = _tabs[_activeTab].ActivePane?.Canvas;
+        if (canvas is null) return;
+
+        var searchBox = new Avalonia.Controls.TextBox
+        {
+            Watermark = "Search...",
+            FontSize = 14,
+            Padding = new Thickness(10, 8),
+        };
+
+        var statusText = new Avalonia.Controls.TextBlock
+        {
+            Foreground = new SolidColorBrush(Color.Parse("#6C7086")),
+            FontSize = 12,
+            Margin = new Thickness(8, 4, 0, 0),
+        };
+
+        var card = new Avalonia.Controls.Border
+        {
+            Background = new SolidColorBrush(Color.Parse("#1E1E2E")),
+            BorderBrush = new SolidColorBrush(Color.Parse("#89B4FA")),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(8),
+            Width = 400,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Top,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+            Margin = new Thickness(0, 8, 16, 0),
+            Child = new Avalonia.Controls.StackPanel
+            {
+                Spacing = 4,
+                Children = { searchBox, statusText },
+            },
+        };
+
+        var overlay = new Avalonia.Controls.Panel
+        {
+            Children = { card },
+        };
+
+        void UpdateSearch()
+        {
+            canvas.SetSearch(searchBox.Text);
+            int count = canvas.SearchMatchCount;
+            int idx = canvas.ActiveMatchIndex;
+            statusText.Text = count > 0 ? $"{idx + 1} / {count} matches" : searchBox.Text?.Length > 0 ? "No matches" : "";
+            canvas.InvalidateVisual();
+        }
+
+        void CloseSearch()
+        {
+            _overlayOpen = false;
+            OverlayHost.Children.Clear();
+            OverlayHost.IsVisible = false;
+            canvas.SetSearch(null);
+            canvas.Focus();
+        }
+
+        searchBox.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == Avalonia.Controls.TextBox.TextProperty)
+                UpdateSearch();
+        };
+
+        searchBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) { CloseSearch(); e.Handled = true; }
+            else if (e.Key == Key.Enter || e.Key == Key.F3)
+            {
+                if (e.KeyModifiers.HasFlag(KeyModifiers.Shift)) canvas.PrevMatch();
+                else canvas.NextMatch();
+                UpdateSearch();
+                e.Handled = true;
+            }
+        };
+
+        OverlayHost.Children.Clear();
+        OverlayHost.Children.Add(overlay);
+        OverlayHost.IsVisible = true;
+        searchBox.Focus();
     }
 
     private void ShowCommandPalette()
@@ -374,6 +470,12 @@ public partial class MainWindow : Window
             new("Split Vertical", "Ctrl+Shift+E", () => SplitActive(SplitDirection.Vertical)),
             new("Next Tab", "Ctrl+Tab", NextTab),
             new("Previous Tab", "Ctrl+Shift+Tab", PrevTab),
+            new("Search in Terminal", "Ctrl+Shift+F", ShowSearchOverlay),
+            new("Copy Selection", "Ctrl+Shift+C", () =>
+            {
+                if (_activeTab >= 0 && _tabs[_activeTab].ActivePane?.Canvas.HasSelection == true)
+                    _ = _tabs[_activeTab].ActivePane!.Canvas.CopySelectionAsync();
+            }),
             new("Focus Next Pane", "Alt+→", FocusNextPane),
             new("Focus Previous Pane", "Alt+←", FocusPrevPane),
             new("Theme: Catppuccin Mocha", null, () => ApplyThemeByName(ThemeConfig.CatppuccinMocha())),
@@ -474,7 +576,7 @@ public partial class MainWindow : Window
     {
         var lastCmd = _history.Entries.Count > 0 ? _history.Entries[^1] : null;
         if (lastCmd is null) return;
-        // Leer últimas líneas de output del grid activo como contexto
+        // Read last output lines from active grid as context
         var grid = _tabs[_activeTab].ActivePane?.Session.Grid;
         var context = lastCmd + "\n\n" + GetRecentOutput(grid, 20);
         ShowAiOverlay(new AiOverlay(_ai, AiPrompts.DebugError,
@@ -522,6 +624,11 @@ public partial class MainWindow : Window
             case Key.E: SplitActive(SplitDirection.Vertical); e.Handled = true; return;
             case Key.A: ShowAiGenerate(); e.Handled = true; return;
             case Key.P: ShowCommandPalette(); e.Handled = true; return;
+            case Key.F: ShowSearchOverlay(); e.Handled = true; return;
+            case Key.C: // Copy selection
+                if (_activeTab >= 0 && _tabs[_activeTab].ActivePane?.Canvas.HasSelection == true)
+                { _ = _tabs[_activeTab].ActivePane!.Canvas.CopySelectionAsync(); e.Handled = true; return; }
+                break;
         }
 
         if (e.KeyModifiers == KeyModifiers.Control) switch (e.Key)
@@ -538,6 +645,30 @@ public partial class MainWindow : Window
             case Key.Right: case Key.Down: FocusNextPane(); e.Handled = true; return;
             case Key.Left: case Key.Up: FocusPrevPane(); e.Handled = true; return;
         }
+    }
+
+    // ── Shell auto-detection ────────────────────────────────────────
+
+    private static string DetectShell(string configured)
+    {
+        // Only auto-detect when using the default
+        if (!string.Equals(configured, "powershell.exe", StringComparison.OrdinalIgnoreCase))
+            return configured;
+
+        // Prefer pwsh.exe (PowerShell 7+) if available
+        try
+        {
+            using var proc = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("pwsh.exe", "--version")
+            {
+                RedirectStandardOutput = true, RedirectStandardError = true,
+                UseShellExecute = false, CreateNoWindow = true,
+            });
+            proc?.WaitForExit(2000);
+            if (proc is { ExitCode: 0 }) return "pwsh.exe";
+        }
+        catch { }
+
+        return configured;
     }
 
     // ── Tab model ───────────────────────────────────────────────────

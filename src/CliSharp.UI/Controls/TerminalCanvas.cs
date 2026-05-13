@@ -4,21 +4,39 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
+using Avalonia.Threading;
 using CliSharp.Application.Terminal;
+using CliSharp.Domain.ValueObjects;
 using CliSharp.UI.Rendering;
 using TerminalGrid = CliSharp.Application.Terminal.Grid;
 
 namespace CliSharp.UI.Controls;
 
 /// <summary>
-/// Control custom: renderiza Grid, captura teclado, mouse wheel/tracking,
-/// bracketed paste, hyperlink Ctrl+Click.
+/// Terminal control: rendering, keyboard, mouse, selection, cursor blink, search highlights.
 /// </summary>
 public class TerminalCanvas : Control
 {
     private TerminalGrid? _grid;
     private object? _syncRoot;
     private readonly TerminalRenderer _renderer;
+
+    // Selection state
+    private (int Row, int Col)? _selStart, _selEnd;
+    private bool _selecting;
+
+    // Cursor blink
+    private readonly DispatcherTimer _blinkTimer;
+    private bool _cursorVisible = true;
+    private long _lastGridGen;
+
+    // Visual bell
+    private bool _bellFlash;
+
+    // Search
+    private List<(int AbsRow, int Col, int Len)>? _searchMatches;
+    private int _activeMatch = -1;
+    private string? _searchQuery;
 
     public Func<byte[], Task>? SendInput { get; set; }
     public TerminalRenderer Renderer => _renderer;
@@ -29,6 +47,10 @@ public class TerminalCanvas : Control
         _renderer = new TerminalRenderer();
         ClipToBounds = true;
         Focusable = true;
+
+        _blinkTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(530) };
+        _blinkTimer.Tick += (_, _) => { _cursorVisible = !_cursorVisible; InvalidateVisual(); };
+        _blinkTimer.Start();
     }
 
     public void SetGrid(TerminalGrid grid, object? syncRoot = null)
@@ -36,6 +58,116 @@ public class TerminalCanvas : Control
         _grid = grid; _syncRoot = syncRoot;
         InvalidateMeasure(); InvalidateVisual();
     }
+
+    /// <summary>Triggers a brief visual bell flash.</summary>
+    public void FlashBell()
+    {
+        _bellFlash = true;
+        InvalidateVisual();
+        DispatcherTimer.RunOnce(() => { _bellFlash = false; InvalidateVisual(); }, TimeSpan.FromMilliseconds(120));
+    }
+
+    private void ResetBlink()
+    {
+        _cursorVisible = true;
+        _blinkTimer.Stop();
+        _blinkTimer.Start();
+    }
+
+    private (int Row, int Col) PixelToCell(Point pos)
+    {
+        int col = Math.Clamp((int)(pos.X / _renderer.Font.CellWidth), 0, (_grid?.Columns ?? 1) - 1);
+        int row = Math.Clamp((int)(pos.Y / _renderer.Font.CellHeight), 0, (_grid?.Rows ?? 1) - 1);
+        return (row, col);
+    }
+
+    // ── Selection ───────────────────────────────────────────────────
+
+    public bool HasSelection => _selStart is not null && _selEnd is not null && _selStart != _selEnd;
+
+    public string GetSelectedText()
+    {
+        if (_grid is null || !HasSelection) return "";
+        var (sr, sc) = _selStart!.Value;
+        var (er, ec) = _selEnd!.Value;
+        if (sr > er || (sr == er && sc > ec)) ((sr, sc), (er, ec)) = ((er, ec), (sr, sc));
+
+        var sb = new StringBuilder();
+        for (int r = sr; r <= er; r++)
+        {
+            var cells = _grid.GetVisibleRow(r);
+            int s = r == sr ? sc : 0;
+            int e = r == er ? ec : _grid.Columns - 1;
+            for (int c = s; c <= e && c < cells.Length; c++)
+                if (!cells[c].Attributes.Flags.HasFlag(CellFlags.WideCharCont))
+                    sb.Append(cells[c].Character);
+            if (r < er) sb.AppendLine();
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    public void ClearSelection() { _selStart = null; _selEnd = null; InvalidateVisual(); }
+
+    public async Task CopySelectionAsync()
+    {
+        if (!HasSelection) return;
+        var text = GetSelectedText();
+        if (string.IsNullOrEmpty(text)) return;
+        var clip = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clip is not null) await clip.SetTextAsync(text);
+        ClearSelection();
+    }
+
+    // ── Search ──────────────────────────────────────────────────────
+
+    public void SetSearch(string? query)
+    {
+        _searchQuery = query;
+        if (_grid is null || string.IsNullOrEmpty(query))
+        {
+            _searchMatches = null; _activeMatch = -1;
+            InvalidateVisual();
+            return;
+        }
+        lock (_syncRoot ?? new object())
+        {
+            _searchMatches = _grid.Search(query);
+        }
+        _activeMatch = _searchMatches.Count > 0 ? 0 : -1;
+        ScrollToActiveMatch();
+        InvalidateVisual();
+    }
+
+    public int SearchMatchCount => _searchMatches?.Count ?? 0;
+    public int ActiveMatchIndex => _activeMatch;
+
+    public void NextMatch()
+    {
+        if (_searchMatches is null || _searchMatches.Count == 0) return;
+        _activeMatch = (_activeMatch + 1) % _searchMatches.Count;
+        ScrollToActiveMatch();
+        InvalidateVisual();
+    }
+
+    public void PrevMatch()
+    {
+        if (_searchMatches is null || _searchMatches.Count == 0) return;
+        _activeMatch = (_activeMatch - 1 + _searchMatches.Count) % _searchMatches.Count;
+        ScrollToActiveMatch();
+        InvalidateVisual();
+    }
+
+    private void ScrollToActiveMatch()
+    {
+        if (_grid is null || _searchMatches is null || _activeMatch < 0) return;
+        var match = _searchMatches[_activeMatch];
+        lock (_syncRoot ?? new object())
+        {
+            _grid.ScrollToAbsoluteRow(match.AbsRow);
+        }
+    }
+
+    // ── Layout ──────────────────────────────────────────────────────
 
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -45,83 +177,100 @@ public class TerminalCanvas : Control
         return new Size(w, h);
     }
 
+    // ── Render ───────────────────────────────────────────────────────
+
     public override void Render(DrawingContext context)
     {
         if (_grid is null) return;
-        if (_syncRoot is not null) lock (_syncRoot) _renderer.Render(context, _grid);
-        else _renderer.Render(context, _grid);
+
+        // Reset blink when grid content changes
+        if (_grid.RenderGeneration != _lastGridGen)
+        {
+            _lastGridGen = _grid.RenderGeneration;
+            _cursorVisible = true;
+        }
+
+        // Pass state to renderer
+        _renderer.CursorBlinkVisible = _cursorVisible;
+        _renderer.BellFlash = _bellFlash;
+        _renderer.Selection = HasSelection ? NormalizeSelection() : null;
+
+        // Search matches visible in current viewport
+        _renderer.SearchHighlights = null;
+        if (_searchMatches is not null && _grid is not null)
+        {
+            var visible = new List<(int ViewRow, int Col, int Len, bool Active)>();
+            for (int i = 0; i < _searchMatches.Count; i++)
+            {
+                var m = _searchMatches[i];
+                int viewRow = m.AbsRow - _grid.ViewRowToAbsolute(0);
+                if (viewRow >= 0 && viewRow < _grid.Rows)
+                    visible.Add((viewRow, m.Col, m.Len, i == _activeMatch));
+            }
+            if (visible.Count > 0) _renderer.SearchHighlights = visible;
+        }
+
+        if (_syncRoot is not null) lock (_syncRoot) _renderer.Render(context, _grid!);
+        else _renderer.Render(context, _grid!);
     }
 
-    // ── Mouse wheel: scrollback o mouse tracking ────────────────────
-
-    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
+    private (int SR, int SC, int ER, int EC)? NormalizeSelection()
     {
-        if (_grid is null) { base.OnPointerWheelChanged(e); return; }
-
-        if (_grid.MouseTrackingMode > 0 && SendInput is not null)
-        {
-            int button = e.Delta.Y > 0 ? 64 : 65;
-            SendMouseSequence(e.GetPosition(this), button, 'M');
-        }
-        else if (_syncRoot is not null)
-        {
-            lock (_syncRoot) _grid.ScrollViewport(e.Delta.Y > 0 ? 3 : -3);
-            InvalidateVisual();
-        }
-        e.Handled = true;
+        if (_selStart is null || _selEnd is null) return null;
+        var (sr, sc) = _selStart.Value;
+        var (er, ec) = _selEnd.Value;
+        if (sr > er || (sr == er && sc > ec)) ((sr, sc), (er, ec)) = ((er, ec), (sr, sc));
+        return (sr, sc, er, ec);
     }
 
-    // ── Mouse press/release/move: tracking + hyperlink click ────────
+    // ── Mouse: selection + wheel + tracking ─────────────────────────
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         Focus();
         if (_grid is null) { base.OnPointerPressed(e); return; }
-
         var props = e.GetCurrentPoint(this).Properties;
 
-        // Ctrl+Click: hyperlink
+        // Ctrl+Click: hyperlinks
         if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && props.IsLeftButtonPressed)
         {
-            var pos = e.GetPosition(this);
-            int col = Math.Clamp((int)(pos.X / _renderer.Font.CellWidth), 0, _grid.Columns - 1);
-            int row = Math.Clamp((int)(pos.Y / _renderer.Font.CellHeight), 0, _grid.Rows - 1);
-            // 1. Explicit OSC 8 hyperlinks
+            var (row, col) = PixelToCell(e.GetPosition(this));
             var cell = _grid[row, col];
             if (cell.Attributes.HyperlinkId > 0)
             {
                 var uri = _grid.GetHyperlinkUri(cell.Attributes.HyperlinkId);
                 if (uri is not null && (uri.StartsWith("http://") || uri.StartsWith("https://")))
-                {
-                    try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); } catch { }
-                    e.Handled = true; return;
-                }
+                { try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); } catch { } e.Handled = true; return; }
             }
-
-            // 2. Automatic URL and file path detection
             var link = LinkDetector.DetectAt(_grid, row, col);
             if (link is not null)
             {
                 try
                 {
-                    if (link.Type == LinkDetector.LinkType.Url)
-                        Process.Start(new ProcessStartInfo(link.Uri) { UseShellExecute = true });
-                    else // FilePath → abrir en VS Code
-                        Process.Start("code", $"--goto \"{link.Uri}\"");
+                    if (link.Type == LinkDetector.LinkType.Url) Process.Start(new ProcessStartInfo(link.Uri) { UseShellExecute = true });
+                    else Process.Start("code", $"--goto \"{link.Uri}\"");
                 }
                 catch { }
                 e.Handled = true; return;
             }
         }
 
-        // Right-click paste (when mouse tracking is off)
+        // Right-click paste
         if (props.IsRightButtonPressed && _grid.MouseTrackingMode == 0)
+        { _ = PasteAsync(); e.Handled = true; return; }
+
+        // Left-click: start selection (when not mouse tracking)
+        if (props.IsLeftButtonPressed && _grid.MouseTrackingMode == 0)
         {
-            _ = PasteAsync();
+            _selStart = PixelToCell(e.GetPosition(this));
+            _selEnd = _selStart;
+            _selecting = true;
+            InvalidateVisual();
             e.Handled = true;
             return;
         }
 
+        // Mouse tracking mode
         if (_grid.MouseTrackingMode > 0 && SendInput is not null)
         {
             int button = props.IsMiddleButtonPressed ? 1 : props.IsRightButtonPressed ? 2 : 0;
@@ -131,29 +280,51 @@ public class TerminalCanvas : Control
         base.OnPointerPressed(e);
     }
 
+    protected override void OnPointerMoved(PointerEventArgs e)
+    {
+        if (_grid is null) { base.OnPointerMoved(e); return; }
+
+        // Selection drag
+        if (_selecting)
+        {
+            _selEnd = PixelToCell(e.GetPosition(this));
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
+        // Mouse tracking
+        if (SendInput is not null)
+        {
+            bool shouldReport = _grid.MouseTrackingMode >= 1003 ||
+                (_grid.MouseTrackingMode >= 1002 && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed);
+            if (shouldReport) { SendMouseSequence(e.GetPosition(this), 32, 'M'); e.Handled = true; }
+        }
+        base.OnPointerMoved(e);
+    }
+
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
-        if (_grid?.MouseTrackingMode > 0 && SendInput is not null)
+        if (_selecting)
         {
-            SendMouseSequence(e.GetPosition(this), 0, 'm');
+            _selecting = false;
+            if (_selStart == _selEnd) ClearSelection(); // Click without drag
             e.Handled = true;
+            return;
         }
+        if (_grid?.MouseTrackingMode > 0 && SendInput is not null)
+        { SendMouseSequence(e.GetPosition(this), 0, 'm'); e.Handled = true; }
         base.OnPointerReleased(e);
     }
 
-    protected override void OnPointerMoved(PointerEventArgs e)
+    protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
-        if (_grid is null || SendInput is null) { base.OnPointerMoved(e); return; }
-
-        bool shouldReport = _grid.MouseTrackingMode >= 1003 ||
-            (_grid.MouseTrackingMode >= 1002 && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed);
-
-        if (shouldReport)
-        {
-            SendMouseSequence(e.GetPosition(this), 32, 'M'); // 32 = motion
-            e.Handled = true;
-        }
-        base.OnPointerMoved(e);
+        if (_grid is null) { base.OnPointerWheelChanged(e); return; }
+        if (_grid.MouseTrackingMode > 0 && SendInput is not null)
+        { SendMouseSequence(e.GetPosition(this), e.Delta.Y > 0 ? 64 : 65, 'M'); }
+        else if (_syncRoot is not null)
+        { lock (_syncRoot) _grid.ScrollViewport(e.Delta.Y > 0 ? 3 : -3); InvalidateVisual(); }
+        e.Handled = true;
     }
 
     private void SendMouseSequence(Point pos, int button, char suffix)
@@ -161,23 +332,16 @@ public class TerminalCanvas : Control
         if (SendInput is null || _grid is null) return;
         int col = Math.Clamp((int)(pos.X / _renderer.Font.CellWidth) + 1, 1, _grid.Columns);
         int row = Math.Clamp((int)(pos.Y / _renderer.Font.CellHeight) + 1, 1, _grid.Rows);
-
-        if (_grid.SgrMouseMode)
-            _ = SendInput(Encoding.UTF8.GetBytes($"\u001b[<{button};{col};{row}{suffix}"));
-        else
-            _ = SendInput([(byte)'\u001b', (byte)'[', (byte)'M',
-                (byte)(button + 32), (byte)(col + 32), (byte)(row + 32)]);
+        if (_grid.SgrMouseMode) _ = SendInput(Encoding.UTF8.GetBytes($"\u001b[<{button};{col};{row}{suffix}"));
+        else _ = SendInput([(byte)'\u001b', (byte)'[', (byte)'M', (byte)(button + 32), (byte)(col + 32), (byte)(row + 32)]);
     }
 
-    // ── Keyboard: TextInput + KeyDown ───────────────────────────────
+    // ── Keyboard ────────────────────────────────────────────────────
 
     protected override void OnTextInput(TextInputEventArgs e)
     {
         if (SendInput is not null && !string.IsNullOrEmpty(e.Text) && !char.IsControl(e.Text[0]))
-        {
-            _ = SendInput(Encoding.UTF8.GetBytes(e.Text));
-            e.Handled = true;
-        }
+        { _ = SendInput(Encoding.UTF8.GetBytes(e.Text)); e.Handled = true; ResetBlink(); }
         base.OnTextInput(e);
     }
 
@@ -190,7 +354,17 @@ public class TerminalCanvas : Control
         if (e.KeyModifiers == KeyModifiers.Control)
         {
             if (e.Key == Key.V) { _ = PasteAsync(); e.Handled = true; base.OnKeyDown(e); return; }
+
+            // Ctrl+C: copy if selection, otherwise send interrupt
+            if (e.Key == Key.C && HasSelection)
+            { _ = CopySelectionAsync(); e.Handled = true; base.OnKeyDown(e); return; }
+
             if (e.Key >= Key.A && e.Key <= Key.Z) data = [(byte)(e.Key - Key.A + 1)];
+        }
+        else if (e.KeyModifiers == (KeyModifiers.Control | KeyModifiers.Shift))
+        {
+            if (e.Key == Key.C && HasSelection)
+            { _ = CopySelectionAsync(); e.Handled = true; base.OnKeyDown(e); return; }
         }
         else if (e.KeyModifiers == KeyModifiers.None)
         {
@@ -208,11 +382,17 @@ public class TerminalCanvas : Control
             };
         }
 
-        if (data is not null) { _ = SendInput(data); e.Handled = true; }
+        if (data is not null)
+        {
+            ClearSelection(); // Any keystroke clears selection
+            _ = SendInput(data);
+            e.Handled = true;
+            ResetBlink();
+        }
         base.OnKeyDown(e);
     }
 
-    // ── Clipboard paste (con bracketed paste mode) ──────────────────
+    // ── Paste ────────────────────────────────────────────────────────
 
     private async Task PasteAsync()
     {
@@ -220,7 +400,6 @@ public class TerminalCanvas : Control
         if (clip is null || SendInput is null) return;
         var text = await clip.GetTextAsync();
         if (string.IsNullOrEmpty(text)) return;
-
         var payload = Encoding.UTF8.GetBytes(text);
         if (_grid?.BracketedPasteMode == true)
         {
@@ -230,5 +409,6 @@ public class TerminalCanvas : Control
             await SendInput(wrapped);
         }
         else await SendInput(payload);
+        ResetBlink();
     }
 }

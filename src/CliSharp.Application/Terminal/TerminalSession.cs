@@ -31,6 +31,7 @@ public sealed class TerminalSession : IAsyncDisposable
     public event Action? ProcessExited;
     public event Action<string>? TitleChanged;
     public event Action<string>? ClipboardSetRequested;
+    public event Action? BellRung;
 
     public TerminalSession(IPtyConnection pty, int columns, int rows)
     {
@@ -41,6 +42,7 @@ public sealed class TerminalSession : IAsyncDisposable
         _pty.ProcessExited += () => ProcessExited?.Invoke();
         _grid.TitleChanged += title => TitleChanged?.Invoke(title);
         _grid.ClipboardSetRequested += text => ClipboardSetRequested?.Invoke(text);
+        _grid.BellRung += () => BellRung?.Invoke();
         _grid.DirectoryChanged += dir => _ = UpdateTabTitleWithGitAsync(dir);
     }
 

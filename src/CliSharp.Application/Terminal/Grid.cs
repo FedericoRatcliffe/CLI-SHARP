@@ -56,10 +56,11 @@ public sealed class Grid
     // Dirty tracking (render generation)
     public long RenderGeneration { get; private set; }
 
-    // Eventos
+    // Events
     public event Action<string>? TitleChanged;
     public event Action<string>? ClipboardSetRequested;
     public event Action<string>? DirectoryChanged;
+    public event Action? BellRung;
 
     private int _viewportOffset;
     public int ViewportOffset
@@ -125,8 +126,58 @@ public sealed class Grid
     }
 
     public void ScrollViewport(int delta) => ViewportOffset += delta;
+
+    /// <summary>Total rows (scrollback + active).</summary>
+    public int TotalRows => _scrollback.Count + Rows;
+
+    /// <summary>Get row by absolute index (0 = oldest scrollback).</summary>
+    public Cell[] GetAbsoluteRow(int absIndex)
+    {
+        if (absIndex < _scrollback.Count) return _scrollback[absIndex];
+        int active = absIndex - _scrollback.Count;
+        return active >= 0 && active < Rows ? _rows[active] : _rows[0];
+    }
+
+    /// <summary>Scroll viewport so the given absolute row is visible.</summary>
+    public void ScrollToAbsoluteRow(int absRow)
+    {
+        int offset = Math.Max(0, _scrollback.Count - absRow);
+        ViewportOffset = Math.Clamp(offset, 0, _scrollback.Count);
+    }
+
+    /// <summary>Convert a viewport row to an absolute row index.</summary>
+    public int ViewRowToAbsolute(int viewRow)
+    {
+        return _scrollback.Count - _viewportOffset + viewRow;
+    }
+
+    /// <summary>Search all rows for a substring. Returns list of (absRow, startCol, length).</summary>
+    public List<(int AbsRow, int Col, int Len)> Search(string query)
+    {
+        var results = new List<(int, int, int)>();
+        if (string.IsNullOrEmpty(query)) return results;
+        var qLower = query.ToLowerInvariant();
+
+        for (int abs = 0; abs < TotalRows; abs++)
+        {
+            var cells = GetAbsoluteRow(abs);
+            int len = Math.Min(cells.Length, Columns);
+            var chars = new char[len];
+            for (int c = 0; c < len; c++) chars[c] = char.ToLowerInvariant(cells[c].Character);
+            var rowStr = new string(chars);
+
+            int idx = 0;
+            while ((idx = rowStr.IndexOf(qLower, idx, StringComparison.Ordinal)) >= 0)
+            {
+                results.Add((abs, idx, query.Length));
+                idx++;
+            }
+        }
+        return results;
+    }
     internal void SetTitle(string title) => TitleChanged?.Invoke(title);
     internal void RequestClipboardSet(string text) => ClipboardSetRequested?.Invoke(text);
+    internal void RingBell() => BellRung?.Invoke();
     private void Touch() => RenderGeneration++;
 
     internal void AddInlineImage(byte[] data, int widthCells, int heightCells)
