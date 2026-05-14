@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(dotnet test *)",
-      "Bash(dotnet publish *)"
+      "Bash(dotnet publish *)",
+      "Bash(dir /b)"
     ]
   }
 }

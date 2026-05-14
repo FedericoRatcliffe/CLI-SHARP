@@ -1,8 +1,8 @@
-# CLI-SHARP
+# SharpTerminal
 
 A modern, GPU-accelerated terminal emulator built with **C# / .NET 8** and **Avalonia UI**, inspired by [Warp](https://www.warp.dev/), [Alacritty](https://github.com/alacritty/alacritty), and [Windows Terminal](https://github.com/microsoft/terminal).
 
-Designed as a daily-driver terminal for developers, with features like command blocks, AI assistance, split panes, text selection, scrollback search, and a fully customizable theme system.
+Designed as a daily-driver terminal for developers, with features like command blocks, AI assistance, split panes, shell switcher, text selection, scrollback search, and a fully customizable theme system.
 
 ---
 
@@ -21,17 +21,17 @@ Designed as a daily-driver terminal for developers, with features like command b
 - **OSC sequences** — Title (`0/2`), CWD (`7`), hyperlinks (`8`), clipboard (`52`), command blocks (`133`), inline images (`1337`)
 - **Scrollback** — 1000 lines, smooth 1-line scroll steps
 - **Visual bell** — Brief screen flash on BEL character
-- **Shell auto-detection** — Prefers `pwsh.exe` (PowerShell 7+) when available
 
 ### Modern UX
 - **Tabs** — Multiple sessions, close button per tab, hover highlight
 - **Split panes** — Horizontal and vertical splits (binary tree layout), active pane indicator
+- **Shell switcher** — Auto-detects installed shells (PowerShell 7+, Windows PowerShell, cmd, WSL, Git Bash) and merges with user-defined entries; switch shells from the command palette
 - **Text selection** — Mouse drag to select, blue highlight overlay
 - **Scrollback search** — Live search with match counter, yellow highlights, F3 navigation
 - **Command blocks** — OSC 133 shell integration with visual separators and exit code badges (&#x2713;/&#x2717;)
-- **Command palette** — Fuzzy search over all actions, themes, and workflows
+- **Command palette** — Fuzzy search over all actions, themes, shells, and workflows
 - **History search** — Fuzzy matching with consecutive/word-start bonuses
-- **Themes** — 5 built-in themes, hot-reloadable via JSON config
+- **Themes** — 6 built-in themes, hot-reloadable via JSON config
 - **Status bar** — Shows shell name, grid size (cols x rows), font size, current directory
 - **Font zoom** — Ctrl+/- to resize font live, Ctrl+0 to reset
 - **Underline & strikethrough** — Rendered as decorations on text runs
@@ -49,9 +49,11 @@ Designed as a daily-driver terminal for developers, with features like command b
 - Powered by **Claude API** (Anthropic) — requires API key in config
 
 ### Performance
-- **Glyph cache** — `FormattedText` objects cached by `(char, bold, color)` tuple
+- **Glyph cache** — Two-generation rotating cache keyed by `(char, bold, color)` for zero-hitch eviction
+- **Brush cache** — ARGB-keyed dictionary replaces per-frame linear palette scans
 - **StringBuilder reuse** — Single instance reused across all text runs per frame
 - **Background rect batching** — Consecutive same-color cells merged into single draw calls
+- **Render pump** — Dedicated invalidation loop decoupled from PTY reads for smooth rendering
 - **Render throttle** — Capped at ~60fps to prevent UI thread saturation during heavy output
 - **Text run batching** — Consecutive same-style characters drawn in one call, enabling **font ligatures** (Fira Code, JetBrains Mono, Cascadia Code)
 - **Inline images** — iTerm2 protocol (OSC 1337) with bitmap caching
@@ -73,8 +75,8 @@ Designed as a daily-driver terminal for developers, with features like command b
 ### Clone and run
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/cli-sharp.git
-cd cli-sharp/Back
+git clone https://github.com/FedericoRatcliffe/SharpTerminal.git
+cd SharpTerminal
 dotnet run --project src/SharpTerminal.UI
 ```
 
@@ -95,7 +97,7 @@ There are **102 unit tests** covering the ANSI parser, grid operations, and Grid
 ### Publish as single-file executable
 
 ```bash
-dotnet publish src/SharpTerminal.UI/SharpTerminal.UI.csproj --configuration Release --runtime win-x64 --output ./publish
+dotnet publish src/SharpTerminal.UI/SharpTerminal.UI.csproj -c Release -r win-x64 -o ./publish
 ```
 
 This produces a **self-contained** `SharpTerminal.UI.exe` (~88 MB) that runs on any Windows 10+ machine **without requiring .NET SDK installed**. Just copy and run.
@@ -162,7 +164,7 @@ This produces a **self-contained** `SharpTerminal.UI.exe` (~88 MB) that runs on 
 
 ## Configuration
 
-CLI-SHARP stores its configuration at:
+SharpTerminal stores its configuration at:
 
 ```
 ~/.clisharp/config.json
@@ -181,17 +183,21 @@ A default config is created on first run. All changes are applied instantly via 
   "shell": "powershell.exe",
   "scrollback": 1000,
   "theme": {
-    "name": "Catppuccin Mocha",
-    "foreground": "#CDD6F4",
-    "background": "#1E1E2E",
-    "cursor": "#F5E0DC",
+    "name": "Pure Black",
+    "foreground": "#E0E0E0",
+    "background": "#000000",
+    "cursor": "#FFFFFF",
     "palette": [
-      "#45475A", "#F38BA8", "#A6E3A1", "#F9E2AF",
-      "#89B4FA", "#CBA6F7", "#94E2D5", "#BAC2DE",
-      "#585B70", "#F38BA8", "#A6E3A1", "#F9E2AF",
-      "#89B4FA", "#CBA6F7", "#94E2D5", "#CDD6F4"
+      "#000000", "#FF5555", "#50FA7B", "#F1FA8C",
+      "#82AAFF", "#FF79C6", "#8BE9FD", "#BFBFBF",
+      "#4D4D4D", "#FF6E6E", "#69FF94", "#FFFFA5",
+      "#A0C4FF", "#FF92DF", "#A4FFFF", "#FFFFFF"
     ]
   },
+  "shells": [
+    { "name": "PowerShell 7+", "command": "pwsh.exe" },
+    { "name": "Git Bash", "command": "C:\\Program Files\\Git\\bin\\bash.exe" }
+  ],
   "ai": {
     "apiKey": "",
     "model": "claude-sonnet-4-20250514"
@@ -207,7 +213,7 @@ A default config is created on first run. All changes are applied instantly via 
 
 ### Shell options
 
-Change `"shell"` to use a different shell. When set to `powershell.exe`, CLI-SHARP automatically detects and prefers `pwsh.exe` (PowerShell 7+) if installed.
+Change `"shell"` to set the default shell, or use `"shells"` to define a list of shells available in the command palette. SharpTerminal auto-detects installed shells (PowerShell 7+, Windows PowerShell, cmd, WSL, Git Bash) and merges them with your config entries.
 
 ```json
 "shell": "powershell.exe"
@@ -236,7 +242,8 @@ Without an API key, AI features show a configuration message instead of results.
 
 | Theme | Background | Style |
 |-------|-----------|-------|
-| **Catppuccin Mocha** | `#1E1E2E` | Dark, warm pastels (default) |
+| **Pure Black** | `#000000` | Dark, high contrast OLED (default) |
+| **Catppuccin Mocha** | `#1E1E2E` | Dark, warm pastels |
 | **One Dark** | `#282C34` | Dark, Atom-inspired |
 | **Dracula** | `#282A36` | Dark, high contrast |
 | **Catppuccin Latte** | `#EFF1F5` | Light, warm pastels |
@@ -256,7 +263,8 @@ Clean Architecture with 4 layers:
 ┌─────────────────────────────────────────────────────────┐
 │  UI (Avalonia)                                          │
 │  MainWindow, TerminalCanvas, TerminalRenderer,          │
-│  PaletteOverlay, AiOverlay, AiService, ConfigManager    │
+│  PaletteOverlay, AiOverlay, AiService, ConfigManager,   │
+│  ShellDetector                                          │
 ├─────────────────────────────────────────────────────────┤
 │  Infrastructure                                         │
 │  ConPtyConnection, PseudoConsole, NativeMethods          │
@@ -274,18 +282,19 @@ Clean Architecture with 4 layers:
 
 - **ANSI Parser**: Table-driven state machine (Paul Williams model), 14 states x 128 bytes transition table, processes `ReadOnlySpan<char>` after UTF-8 decoding
 - **Grid**: Jagged `Cell[][]` array for O(1) scroll (reference swap), parallel `byte[]` for command block markers, `InlineImageData` list for iTerm2 images
-- **Rendering**: Avalonia `DrawingContext` with glyph cache, StringBuilder reuse, background rect batching, and text run batching for ligature support. Render throttled to ~60fps.
+- **Rendering**: Avalonia `DrawingContext` with two-generation glyph cache, ARGB brush cache, StringBuilder reuse, background rect batching, and text run batching for ligature support. Render pump decoupled from PTY reads, throttled to ~60fps.
 - **Threading**: Background reader takes `lock(SyncRoot)` to update grid; UI thread takes the same lock to render. Coarse-grained but correct.
 - **Splits**: Binary tree (`SplitBranch` / `TerminalPane`) converted to nested `Avalonia.Controls.Grid` layouts
 - **ConPTY**: Direct P/Invoke to `kernel32.dll` — `CreatePseudoConsole`, `CreateProcessW`, pipe I/O
 - **Cursor**: Three shapes (block, underline, bar) via DECSCUSR, with 530ms blink timer that resets on input
+- **Shell detection**: `ShellDetector` auto-discovers installed shells and merges with user config entries
 
 ---
 
 ## Project Structure
 
 ```
-Back/
+SharpTerminal/
 ├── SharpTerminal.sln
 ├── nuget.config
 ├── .gitignore
@@ -310,7 +319,7 @@ Back/
 │   │
 │   └── SharpTerminal.UI/
 │       ├── AI/                AiService.cs
-│       ├── Config/            AppConfig.cs, ConfigManager.cs
+│       ├── Config/            AppConfig.cs, ConfigManager.cs, ShellDetector.cs
 │       ├── Controls/          TerminalCanvas.cs, PaletteOverlay.cs, AiOverlay.cs
 │       ├── Layout/            SplitNode.cs
 │       ├── Rendering/         TerminalRenderer.cs, FontMetrics.cs
@@ -429,8 +438,8 @@ Contributions are welcome! Here are some areas where help is appreciated:
 
 ```bash
 # Clone
-git clone https://github.com/YOUR_USERNAME/cli-sharp.git
-cd cli-sharp/Back
+git clone https://github.com/FedericoRatcliffe/SharpTerminal.git
+cd SharpTerminal
 
 # Build
 dotnet build SharpTerminal.sln
